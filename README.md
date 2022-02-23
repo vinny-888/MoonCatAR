@@ -21,3 +21,18 @@ To run locally you need a HTTPS server to allow camera access
 ## Code is located in 
 
 [https://github.com/vinny-888/MoonCatAR/blob/main/ar/demo/index.html](https://github.com/vinny-888/MoonCatAR/blob/main/ar/demo/index.html)
+
+# References and Inspiration
+
+## MoonCatWalk - used to render the MoonCats Walk Cycles
+
+[https://github.com/vinny-888/mooncat-walkcycle](https://github.com/vinny-888/mooncat-walkcycle)
+
+## AR.js - used for tracking the marker using the camera
+
+[https://github.com/AR-js-org/AR.js](https://github.com/AR-js-org/AR.js)
+
+
+## VoxelMesh - used to render the MoonCat as a single Mesh (Huge performance boost thanks to this the animations are possible)
+
+[https://r105.threejsfundamentals.org/threejs/lessons/threejs-voxel-geometry.html](https://r105.threejsfundamentals.org/threejs/lessons/threejs-voxel-geometry.html)
