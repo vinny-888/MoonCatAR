@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<!-- three.js library -->
+<script src='vendor/three.js/build/three.min.js'></script>
+<!-- ar.js -->
+<script src="../build/ar.js"></script>
+<script>THREEx.ArToolkitContext.baseURL = '../'</script>
+
+<body style='margin : 0px; overflow: hidden; font-family: Monospace;'>
+    <div style="position: absolute; top: 20px;left: 20px;z-index: 1;">
+    Token ID: <input id="mooncat_id" type="number" value="0" onchange="updateMoonCatID()">
+    </div>
+<script type="module">
+
+    import { mooncats } from "./vendor/mooncat_ids.js";
+    import { MoonCatWalk } from "./vendor/mooncatWalk.js";
+    let moonCatID = 0;
+    window.updateMoonCatID = function(){
+        moonCatID = parseInt(document.getElementById('mooncat_id').value);
+    }
+	class VoxelWorld {
+        constructor(options) {
+            this.cellSize = options.cellSize;
+            this.tileSize = options.tileSize;
+            this.tileTextureWidth = options.tileTextureWidth;
+            this.tileTextureHeight = options.tileTextureHeight;
+            const {cellSize} = this;
+            this.cellSliceSize = cellSize * cellSize;
+            this.cells = {};
+        }
+        computeVoxelOffset(x, y, z) {
+            const {cellSize, cellSliceSize} = this;
+            const voxelX = THREE.Math.euclideanModulo(x, cellSize) | 0;
+            const voxelY = THREE.Math.euclideanModulo(y, cellSize) | 0;
+            const voxelZ = THREE.Math.euclideanModulo(z, cellSize) | 0;
+            return voxelY * cellSliceSize +
+                voxelZ * cellSize +
+                voxelX;
+        }
+        computeCellId(x, y, z) {
+            const {cellSize} = this;
+            const cellX = Math.floor(x / cellSize);
+            const cellY = Math.floor(y / cellSize);
+            const cellZ = Math.floor(z / cellSize);
+            return `${cellX},${cellY},${cellZ}`;
+        }
+        addCellForVoxel(x, y, z) {
+            const cellId = this.computeCellId(x, y, z);
+            let cell = this.cells[cellId];
+            if (!cell) {
+            const {cellSize} = this;
+            cell = new Uint8Array(cellSize * cellSize * cellSize);
+            this.cells[cellId] = cell;
+            }
+            return cell;
+        }
+        getCellForVoxel(x, y, z) {
+            return this.cells[this.computeCellId(x, y, z)];
+        }
+        setVoxel(x, y, z, v, addCell = true) {
+            let cell = this.getCellForVoxel(x, y, z);
+            if (!cell) {
+            if (!addCell) {
+                return;
+            }
+            cell = this.addCellForVoxel(x, y, z);
+            }
+            const voxelOffset = this.computeVoxelOffset(x, y, z);
+            cell[voxelOffset] = v;
+        }
+        getVoxel(x, y, z) {
+            const cell = this.getCellForVoxel(x, y, z);
+            if (!cell) {
+            return 0;
+            }
+            const voxelOffset = this.computeVoxelOffset(x, y, z);
+            return cell[voxelOffset];
+        }
+        generateGeometryDataForCell(cellX, cellY, cellZ) {
+            const {cellSize, tileSize, tileTextureWidth, tileTextureHeight} = this;
+            const positions = [];
+            const normals = [];
+            const uvs = [];
+            const indices = [];
+            const startX = cellX * cellSize;
+            const startY = cellY * cellSize;
+            const startZ = cellZ * cellSize;
+
+            for (let y = 0; y < cellSize; ++y) {
+            const voxelY = startY + y;
+            for (let z = 0; z < cellSize; ++z) {
+                const voxelZ = startZ + z;
+                for (let x = 0; x < cellSize; ++x) {
+                const voxelX = startX + x;
+                const voxel = this.getVoxel(voxelX, voxelY, voxelZ);
+                if (voxel) {
+                    // voxel 0 is sky (empty) so for UVs we start at 0
+                    const uvVoxel = voxel - 1;
+                    // There is a voxel here but do we need faces for it?
+                    for (const {dir, corners, uvRow} of VoxelWorld.faces) {
+                    const neighbor = this.getVoxel(
+                        voxelX + dir[0],
+                        voxelY + dir[1],
+                        voxelZ + dir[2]);
+                    if (!neighbor) {
+                        // this voxel has no neighbor in this direction so we need a face.
+                        const ndx = positions.length / 3;
+                        for (const {pos, uv} of corners) {
+                        positions.push(pos[0] + x, pos[1] + y, pos[2] + z);
+                        normals.push(...dir);
+                        uvs.push(
+                                (uvVoxel +     uv[0]) * tileSize / tileTextureWidth,
+                            1 - (uvRow + 1 - uv[1]) * tileSize / tileTextureHeight);
+                        }
+                        indices.push(
+                        ndx, ndx + 1, ndx + 2,
+                        ndx + 2, ndx + 1, ndx + 3,
+                        );
+                    }
+                    }
+                }
+                }
+            }
+            }
+
+            return {
+            positions,
+            normals,
+            uvs,
+            indices,
+            };
+        }
+
+            // from
+            // http://www.cse.chalmers.se/edu/year/2010/course/TDA361/grid.pdf
+            intersectRay(start, end) {
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            let dz = end.z - start.z;
+            const lenSq = dx * dx + dy * dy + dz * dz;
+            const len = Math.sqrt(lenSq);
+
+            dx /= len;
+            dy /= len;
+            dz /= len;
+
+            let t = 0.0;
+            let ix = Math.floor(start.x);
+            let iy = Math.floor(start.y);
+            let iz = Math.floor(start.z);
+
+            const stepX = (dx > 0) ? 1 : -1;
+            const stepY = (dy > 0) ? 1 : -1;
+            const stepZ = (dz > 0) ? 1 : -1;
+
+            const txDelta = Math.abs(1 / dx);
+            const tyDelta = Math.abs(1 / dy);
+            const tzDelta = Math.abs(1 / dz);
+
+            const xDist = (stepX > 0) ? (ix + 1 - start.x) : (start.x - ix);
+            const yDist = (stepY > 0) ? (iy + 1 - start.y) : (start.y - iy);
+            const zDist = (stepZ > 0) ? (iz + 1 - start.z) : (start.z - iz);
+
+            // location of nearest voxel boundary, in units of t
+            let txMax = (txDelta < Infinity) ? txDelta * xDist : Infinity;
+            let tyMax = (tyDelta < Infinity) ? tyDelta * yDist : Infinity;
+            let tzMax = (tzDelta < Infinity) ? tzDelta * zDist : Infinity;
+
+            let steppedIndex = -1;
+
+            // main loop along raycast vector
+            while (t <= len) {
+            const voxel = this.getVoxel(ix, iy, iz);
+            if (voxel) {
+                return {
+                position: [
+                    start.x + t * dx,
+                    start.y + t * dy,
+                    start.z + t * dz,
+                ],
+                normal: [
+                    steppedIndex === 0 ? -stepX : 0,
+                    steppedIndex === 1 ? -stepY : 0,
+                    steppedIndex === 2 ? -stepZ : 0,
+                ],
+                voxel,
+                };
+            }
+
+            // advance t to next nearest voxel boundary
+            if (txMax < tyMax) {
+                if (txMax < tzMax) {
+                ix += stepX;
+                t = txMax;
+                txMax += txDelta;
+                steppedIndex = 0;
+                } else {
+                iz += stepZ;
+                t = tzMax;
+                tzMax += tzDelta;
+                steppedIndex = 2;
+                }
+            } else {
+                if (tyMax < tzMax) {
+                iy += stepY;
+                t = tyMax;
+                tyMax += tyDelta;
+                steppedIndex = 1;
+                } else {
+                iz += stepZ;
+                t = tzMax;
+                tzMax += tzDelta;
+                steppedIndex = 2;
+                }
+            }
+            }
+            return null;
+        }
+    }
+
+    VoxelWorld.faces = [
+        { // left
+            uvRow: 0,
+            dir: [ -1,  0,  0, ],
+            corners: [
+            { pos: [ 0, 1, 0 ], uv: [ 0, 1 ], },
+            { pos: [ 0, 0, 0 ], uv: [ 0, 0 ], },
+            { pos: [ 0, 1, 1 ], uv: [ 1, 1 ], },
+            { pos: [ 0, 0, 1 ], uv: [ 1, 0 ], },
+            ],
+        },
+        { // right
+            uvRow: 0,
+            dir: [  1,  0,  0, ],
+            corners: [
+            { pos: [ 1, 1, 1 ], uv: [ 0, 1 ], },
+            { pos: [ 1, 0, 1 ], uv: [ 0, 0 ], },
+            { pos: [ 1, 1, 0 ], uv: [ 1, 1 ], },
+            { pos: [ 1, 0, 0 ], uv: [ 1, 0 ], },
+            ],
+        },
+        { // bottom
+            uvRow: 1,
+            dir: [  0, -1,  0, ],
+            corners: [
+            { pos: [ 1, 0, 1 ], uv: [ 1, 0 ], },
+            { pos: [ 0, 0, 1 ], uv: [ 0, 0 ], },
+            { pos: [ 1, 0, 0 ], uv: [ 1, 1 ], },
+            { pos: [ 0, 0, 0 ], uv: [ 0, 1 ], },
+            ],
+        },
+        { // top
+            uvRow: 2,
+            dir: [  0,  1,  0, ],
+            corners: [
+            { pos: [ 0, 1, 1 ], uv: [ 1, 1 ], },
+            { pos: [ 1, 1, 1 ], uv: [ 0, 1 ], },
+            { pos: [ 0, 1, 0 ], uv: [ 1, 0 ], },
+            { pos: [ 1, 1, 0 ], uv: [ 0, 0 ], },
+            ],
+        },
+        { // back
+            uvRow: 0,
+            dir: [  0,  0, -1, ],
+            corners: [
+            { pos: [ 1, 0, 0 ], uv: [ 0, 0 ], },
+            { pos: [ 0, 0, 0 ], uv: [ 1, 0 ], },
+            { pos: [ 1, 1, 0 ], uv: [ 0, 1 ], },
+            { pos: [ 0, 1, 0 ], uv: [ 1, 1 ], },
+            ],
+        },
+        { // front
+            uvRow: 0,
+            dir: [  0,  0,  1, ],
+            corners: [
+            { pos: [ 0, 0, 1 ], uv: [ 0, 0 ], },
+            { pos: [ 1, 0, 1 ], uv: [ 1, 0 ], },
+            { pos: [ 0, 1, 1 ], uv: [ 0, 1 ], },
+            { pos: [ 1, 1, 1 ], uv: [ 1, 1 ], },
+            ],
+        },
+    ];
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		Init
+	//////////////////////////////////////////////////////////////////////////////////
+
+	// init renderer
+	var renderer	= new THREE.WebGLRenderer({
+		antialias: false,
+		alpha: true
+	});
+	// renderer.setClearColor(new THREE.Color('lightgrey'), 0)
+	renderer.setSize( 640, 480 );
+	renderer.domElement.style.position = 'absolute'
+	renderer.domElement.style.top = '0px'
+	renderer.domElement.style.left = '0px'
+	document.body.appendChild( renderer.domElement );
+
+	// array of functions for the rendering loop
+	var onRenderFcts= [];
+
+	let cubes = [];
+	let mooncatsArr = [];
+	let mooncatsDirections = null;
+	let frameCount = 0;
+
+	// init scene and camera
+	var scene	= new THREE.Scene();
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		Initialize a basic camera
+	//////////////////////////////////////////////////////////////////////////////////
+
+	// Create a camera
+	var camera = new THREE.Camera();
+	scene.add(camera);
+
+	////////////////////////////////////////////////////////////////////////////////
+	//          handle arToolkitSource
+	////////////////////////////////////////////////////////////////////////////////
+
+	var arToolkitSource = new THREEx.ArToolkitSource({
+		// to read from the webcam
+		sourceType : 'webcam',
+
+		// to read from an image
+		// sourceType : 'image',
+		// sourceUrl : THREEx.ArToolkitContext.baseURL + '../data/images/img.jpg',
+
+		// to read from a video
+		// sourceType : 'video',
+		// sourceUrl : THREEx.ArToolkitContext.baseURL + '../data/videos/headtracking.mp4',
+	})
+
+	arToolkitSource.init(function onReady(){
+        setTimeout(() => {
+            onResize()
+        }, 2000);
+	})
+
+	// handle resize
+	window.addEventListener('resize', function(){
+		onResize()
+    })
+
+	function onResize(){
+		arToolkitSource.onResizeElement()
+		arToolkitSource.copyElementSizeTo(renderer.domElement)
+		if( arToolkitContext.arController !== null ){
+			arToolkitSource.copyElementSizeTo(arToolkitContext.arController.canvas)
+		}
+	}
+	////////////////////////////////////////////////////////////////////////////////
+	//          initialize arToolkitContext
+	////////////////////////////////////////////////////////////////////////////////
+
+
+	// create atToolkitContext
+	var arToolkitContext = new THREEx.ArToolkitContext({
+		cameraParametersUrl: THREEx.ArToolkitContext.baseURL + '../data/data/camera_para.dat',
+		detectionMode: 'mono',
+	})
+	// initialize it
+	arToolkitContext.init(function onCompleted(){
+		// copy projection matrix to camera
+		camera.projectionMatrix.copy( arToolkitContext.getProjectionMatrix() );
+	})
+
+	// update artoolkit on every frame
+	onRenderFcts.push(function(){
+		if( arToolkitSource.ready === false )	return
+
+		arToolkitContext.update( arToolkitSource.domElement )
+
+		// update scene.visible if the marker is seen
+		scene.visible = camera.visible
+	})
+
+	////////////////////////////////////////////////////////////////////////////////
+	//          Create a ArMarkerControls
+	////////////////////////////////////////////////////////////////////////////////
+
+	// init controls for camera
+	var markerControls = new THREEx.ArMarkerControls(arToolkitContext, camera, {
+		type : 'pattern',
+		patternUrl : THREEx.ArToolkitContext.baseURL + '../data/data/patt.hiro',
+		// patternUrl : THREEx.ArToolkitContext.baseURL + '../data/data/patt.kanji',
+		// as we controls the camera, set changeMatrixMode: 'cameraTransformMatrix'
+		changeMatrixMode: 'cameraTransformMatrix'
+	})
+	// as we do changeMatrixMode: 'cameraTransformMatrix', start with invisible scene
+	scene.visible = false
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		add an object in the scene
+	//////////////////////////////////////////////////////////////////////////////////
+
+	var root = new THREE.Object3D();
+	root.matrixAutoUpdate = false;
+	scene.add(root);
+
+
+	
+
+	for(let i=moonCatID; i<moonCatID+1; i++){
+		if(!mooncatsDirections){
+            mooncatsDirections = {
+                direction: 6,
+                frame: 0,
+                pos: [-1, 0, 0],
+                rot: [0, 0, 0]
+            }
+		}
+		// let mooncat = renderMoonCat(i);
+		let mooncat = renderMeshMoonCat(i);
+		mooncat.mooncatId = i;
+		mooncat.position.set(mooncatsDirections.pos[0], mooncatsDirections.pos[1], mooncatsDirections.pos[2]);
+		mooncat.rotation.set(mooncatsDirections.rot[0], mooncatsDirections.rot[1], mooncatsDirections.rot[2]);
+		mooncat.scale.set(0.1,0.1,0.1);
+		root.add(mooncat);
+		root.rotation.set(0, 0, 0);
+		mooncatsArr.push(mooncat);
+	}
+
+	setInterval(()=>{
+		mooncatsArr.forEach((mooncat)=>{
+			root.remove(mooncat);
+		});
+		mooncatsArr = [];
+        
+		for(let i=moonCatID; i<moonCatID+1; i++){
+			let mooncat = renderMeshMoonCat(i);
+			mooncat.mooncatId = i;
+			mooncat.position.set(mooncatsDirections.pos[0], mooncatsDirections.pos[1], mooncatsDirections.pos[2]);
+			mooncat.rotation.set(mooncatsDirections.rot[0], mooncatsDirections.rot[1], mooncatsDirections.rot[2]);
+			mooncat.scale.set(0.1,0.1,0.1);
+			root.add(mooncat);
+			mooncatsArr.push(mooncat);
+		}
+	}, 1000/8);
+
+
+	onRenderFcts.push(function(delta){
+		root.rotation.x += Math.PI*delta
+	})
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		render the whole thing on the page
+	//////////////////////////////////////////////////////////////////////////////////
+
+	// render the scene
+	onRenderFcts.push(function(){
+		renderer.render( scene, camera );
+	})
+
+	// run the rendering loop
+	var lastTimeMsec= null
+	requestAnimationFrame(function animate(nowMsec){
+		// keep looping
+		requestAnimationFrame( animate );
+
+		if(true){
+			mooncatsArr.forEach((mooncat)=>{
+				if(frameCount > 4){
+					if(Math.random() < 0.01){
+						mooncatsDirections.direction = Math.round(Math.random()*7);
+					}
+					mooncatsDirections.frame++;
+					if(mooncatsDirections.frame > 7){
+						mooncatsDirections.frame = 0;
+					}
+					frameCount = 0;
+				}
+				frameCount++;
+				/*
+				0 = right
+				1 = up
+				2 = down
+				3 = left
+				4 = idle right
+				5 = idle up
+				6 = idle down
+				7 = idle left
+				*/
+				if(false){
+					let yOffset = 0;
+					let speed = 0.05;
+					switch (mooncatsDirections.direction) {
+					case 0:
+						mooncatsDirections.pos[0] += speed;
+						mooncatsDirections.rot[1] = Math.PI/4;
+						break;
+					case 1:
+						mooncatsDirections.pos[2] += speed;
+						mooncatsDirections.rot[1] = Math.PI/2;
+						break;
+					case 2:
+						mooncatsDirections.pos[2] += -speed;
+						mooncatsDirections.rot[1] = -Math.PI/2;
+						break;
+					case 3:
+						mooncatsDirections.pos[0] -= -speed;
+						mooncatsDirections.rot[1] = -Math.PI/4;
+						break;
+					case 4:
+						mooncatsDirections.rot[1] = Math.PI/4;
+						break;
+					case 5:
+						yOffset = 0.5;
+						mooncatsDirections.rot[1] = Math.PI/2;
+						break;
+					case 6:
+						mooncatsDirections.rot[1] = -Math.PI/2;
+						break;
+					case 7:
+						mooncatsDirections.rot[1] = -Math.PI/4;
+						break;
+					
+					default:
+						break;
+					}
+					mooncat.position.x = mooncatsDirections.pos[0];
+					mooncat.position.y = mooncatsDirections.pos[1]+yOffset;
+					mooncat.position.z = mooncatsDirections.pos[2];
+					mooncat.rotation.y = mooncatsDirections.rot[1];
+				}
+				// if(mooncat.position.y >= bounce_height){
+				//   mooncatsDirections[index] = -mooncatsDirections[index];
+				// } else if (mooncat.position.y <= bounce_height-1){
+				//   mooncatsDirections[index] = mooncatsDirections[index]*-1;
+				// }
+
+				// mooncat.position.y += mooncatsDirections[index];
+
+				// mooncat.rotation.y += Math.PI/60 * Math.random() * rotateSpeed;
+			});
+		}
+
+		// measure time
+		lastTimeMsec	= lastTimeMsec || nowMsec-1000/60
+		var deltaMsec	= Math.min(200, nowMsec - lastTimeMsec)
+		lastTimeMsec	= nowMsec
+		// call each update function
+		onRenderFcts.forEach(function(onRenderFct){
+			onRenderFct(deltaMsec/1000, nowMsec/1000)
+		})
+	})
+
+
+    function renderMoonCat(mooncatId){
+      let blockSize = 0.1;
+      let group = new THREE.Group();
+      // group = new THREE.Group();
+      const position = new THREE.Vector3();
+      position.x = 0;
+      position.y = 0;
+      position.z = 0;
+
+      const rotation = new THREE.Euler();
+      rotation.x = 0;
+      rotation.y = 0;
+      rotation.z = 0;
+
+      const scale = new THREE.Vector3();
+      scale.x = 1;
+      scale.y = 1;
+      scale.z = 1;
+      // group.position.set( position );
+      const matrix = new THREE.Matrix4();
+      const quaternion = new THREE.Quaternion();
+      const color = new THREE.Color();
+
+      // if(mooncatsDirections[mooncatId]){
+      let pixelMap = MoonCatWalk.generateMoonCatWalk(mooncats[mooncatId], mooncatsDirections.direction, mooncatsDirections.frame, 1);
+      // let pixelMap = MoonCatParser.generateMoonCatPixelMap(mooncats[mooncatId]);
+
+      const offset = new THREE.Vector3( -blockSize*pixelMap.length/2, 0, -blockSize*pixelMap[0].length/2 );
+
+      pixelMap.forEach((row, i)=>{
+        row.forEach((pixel, j)=>{
+          if(pixel != null){
+            const material = new THREE.MeshBasicMaterial( {color: pixel} );
+            if(true || (i == 0 || i == pixelMap.length-1) || (j == 0 || j == row.length-1)){
+              let geometry = new THREE.BoxGeometry(1, 1, 1);
+
+              const cube = new THREE.Mesh( geometry, material );
+  
+              let x = j*blockSize + offset.x;
+              let y = -i*blockSize - offset.z;
+              let z = 0 + offset.y;
+  
+              cube.position.set( x,y,z );
+              cube.rotation.set( 0,0,0 );
+              cube.scale.set( blockSize,blockSize,blockSize );
+              cubes.push(cube);
+              group.add(cube);
+            } else {
+              let geometryFront = new THREE.PlaneGeometry(1, 1, 1);
+              let geometryBack = new THREE.PlaneGeometry(1, 1, 1);
+
+              const planeFront = new THREE.Mesh( geometryFront, material );
+              const planeBack = new THREE.Mesh( geometryBack, material );
+  
+              let x = i*blockSize + offset.x;
+              let y = -j*blockSize - offset.z;
+              let z = 0 + offset.y;
+  
+              planeFront.position.set( x,y,z-blockSize );
+              planeFront.rotation.set( 0,Math.PI,0 );
+              planeFront.scale.set( blockSize,1,blockSize );
+              cubes.push(planeFront);
+              group.add(planeFront);
+
+              planeBack.position.set( x,y,z-blockSize );
+              planeBack.rotation.set( 0,0,0 );
+              planeBack.scale.set( blockSize,1,blockSize );
+              cubes.push(planeBack);
+              group.add(planeBack);
+            }
+            // scene.add( cube );
+          }
+        })
+      })
+
+      group.rotation.set( 0, 0, 0 );
+      return group;
+    }
+    
+	function renderMeshMoonCat(mooncatId){
+        let blockSize = 0.1;
+        let group = new THREE.Group();
+
+        let pixelMap = MoonCatWalk.generateMoonCatWalk(mooncats[mooncatId], mooncatsDirections.direction, mooncatsDirections.frame, 1);
+
+        const cellSize = 32;
+
+        let colors = [];
+        pixelMap.forEach((row, i)=>{
+            row.forEach((pixel, j)=>{
+                if(pixel != null && colors.indexOf(pixel) == -1){
+                    colors.push(pixel);
+                }
+            });
+        });
+
+		const tileSize = 16;
+        const tileTextureWidth = tileSize*colors.length;
+        const tileTextureHeight = tileSize;
+
+        let textureCanvas = document.createElement("canvas");
+        let context = textureCanvas.getContext("2d");
+        textureCanvas.width = tileSize*colors.length;
+        textureCanvas.height = tileSize;
+        for(let i=0; i<colors.length; i++){
+            context.fillStyle = colors[i];
+            context.fillRect(i*tileSize, 0, tileSize, tileSize);
+        }
+        
+        var texture = new THREE.Texture(textureCanvas, THREE.UVMapping);
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+
+        var material = new THREE.MeshBasicMaterial({ 
+            map : texture, 
+            // overdraw: false,
+            side: THREE.DoubleSide,
+            alphaTest: 0,
+            transparent: false,
+        });
+        material.needsUpdate = true;
+
+        const world = new VoxelWorld({
+            cellSize,
+            tileSize,
+            tileTextureWidth,
+            tileTextureHeight,
+        });
+
+        const cellIdToMesh = {};
+        function updateCellGeometry(x, y, z) {
+            const cellX = Math.floor(x / cellSize);
+            const cellY = Math.floor(y / cellSize);
+            const cellZ = Math.floor(z / cellSize);
+            const cellId = world.computeCellId(x, y, z);
+            let mesh = cellIdToMesh[cellId];
+            if (!mesh) {
+                const geometry = new THREE.BufferGeometry();
+                const positionNumComponents = 3;
+                const normalNumComponents = 3;
+                const uvNumComponents = 2;
+
+                geometry.addAttribute(
+                    'position',
+                    new THREE.BufferAttribute(new Float32Array(0), positionNumComponents));
+                geometry.addAttribute(
+                    'normal',
+                    new THREE.BufferAttribute(new Float32Array(0), normalNumComponents));
+                geometry.addAttribute(
+                    'uv',
+                    new THREE.BufferAttribute(new Float32Array(0), uvNumComponents));
+
+                mesh = new THREE.Mesh(geometry, material);
+                mesh.name = cellId;
+                cellIdToMesh[cellId] = mesh;
+                group.add(mesh);
+                mesh.position.set(cellX * cellSize, cellY * cellSize, cellZ * cellSize);
+            }
+
+            const {positions, normals, uvs, indices} = world.generateGeometryDataForCell(cellX, cellY, cellZ);
+            const geometry = mesh.geometry;
+            geometry.getAttribute('position').setArray(new Float32Array(positions)).needsUpdate = true;
+            geometry.getAttribute('normal').setArray(new Float32Array(normals)).needsUpdate = true;
+            geometry.getAttribute('uv').setArray(new Float32Array(uvs)).needsUpdate = true;
+            geometry.setIndex(indices);
+            geometry.computeBoundingSphere();
+        }
+
+        const neighborOffsets = [
+            [ 0,  0,  0], // self
+            [-1,  0,  0], // left
+            [ 1,  0,  0], // right
+            [ 0, -1,  0], // down
+            [ 0,  1,  0], // up
+            [ 0,  0, -1], // back
+            [ 0,  0,  1], // front
+        ];
+        function updateVoxelGeometry(x, y, z) {
+            const updatedCellIds = {};
+            for (const offset of neighborOffsets) {
+                const ox = x + offset[0];
+                const oy = y + offset[1];
+                const oz = z + offset[2];
+                const cellId = world.computeCellId(ox, oy, oz);
+                if (!updatedCellIds[cellId]) {
+                    updatedCellIds[cellId] = true;
+                    updateCellGeometry(ox, oy, oz);
+                }
+            }
+        }
+            
+        
+		for(let i=pixelMap.length-1; i>=0; i--){
+			let row = pixelMap[i];
+			row.forEach((pixel, j)=>{
+                if(pixel != null){
+                    let x = j;
+                    let y = pixelMap.length-i;
+                    let z = 0;
+                    let colorIndex = colors.indexOf(pixel)+1;
+                    world.setVoxel(x, y, z, colorIndex);
+                }
+			});
+        }
+
+        updateVoxelGeometry(1, 1, 1);
+
+        group.rotation.set( 0, 0, 0 );
+        return group;
+    }
+
+</script></body>
