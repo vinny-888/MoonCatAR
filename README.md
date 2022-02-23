@@ -1,5 +1,15 @@
 # MoonCatAR
 
+## Demo
+
+![Demo](https://github.com/vinny-888/MoonCatAR/raw/main/demo_small.gif)
+
+## Live Demo
+
+[https://mooncataverse.com/ar/demo/index.html](https://mooncataverse.com/ar/demo/index.html)
+
+# Setup
+
 To run locally you need a HTTPS server to allow camera access
 
 ## Install http-server globally
